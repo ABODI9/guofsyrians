@@ -1,0 +1,43 @@
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8222:8222"
+    depends_on:
+      - db
+    environment:
+      - MONGODB_URI=mongodb://db:27017/mydb
+    env_file:
+      - ./backend/.env
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "4173:4173"
+    depends_on:
+      - backend
+    env_file:
+      - ./frontend/.env
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf.develop:/etc/nginx/conf.d/default.conf
+    restart: unless-stopped
+
+  db:
+    container_name: mongo
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./data/db:/data/db
+
+networks:
+  default:
+    driver: bridge
