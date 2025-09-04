@@ -1,3 +1,4 @@
+# app/schemas/job.py
 from __future__ import annotations
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Literal, Any
@@ -14,7 +15,6 @@ Employment = Literal[
 ]
 Workplace = Literal["onsite", "remote", "hybrid"]
 
-
 class _NormalizeLists(BaseModel):
     @staticmethod
     def _to_list(v: Any) -> List[str]:
@@ -22,10 +22,8 @@ class _NormalizeLists(BaseModel):
             return []
         if isinstance(v, list):
             return [str(i).strip() for i in v if str(i).strip()]
-        # لو نص، نفصّله حسب الأسطر
         return [line.strip() for line in str(v).splitlines() if line.strip()]
 
-    # المهم: check_fields=False لأن هذا الكلاس ما عنده الحقل بنفسه
     @field_validator("application_url", mode="before", check_fields=False)
     @classmethod
     def empty_str_to_none(cls, v: Any) -> Optional[str]:
@@ -39,7 +37,7 @@ class _NormalizeLists(BaseModel):
         "requirements",
         "benefits",
         mode="before",
-        check_fields=False,  # ← إضافة مهمة
+        check_fields=False,
     )
     @classmethod
     def normalize_lists(cls, v: Any) -> List[str]:

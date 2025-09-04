@@ -1,78 +1,82 @@
-import { useEffect, useMemo, useState } from 'react';
+// frontend/src/components/announcements/Announcements.jsx
+import { useEffect, useMemo, useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { jobsAPI } from '@/utils/api';
-import { Link } from 'react-router-dom'; // لو ما تستخدم روتر احذف هذا السطر واستخدم <a> فقط
+import JobActions from '@/components/Admin/JobActions';
+// لو عندك سياق مصادقة استخدمه، وإلا سنسقط على localStorage
+import { useAuth } from '@/contexts/AuthContext'; // اختياري
 
 const Announcements = ({ onSidebarHide }) => {
-  const [filter, setFilter] = useState('all'); // all | high | medium | low | jobs (ممكن تبقيها)
+  const auth = (() => {
+    try { return useAuth?.(); } catch { return null; }
+  })();
+
+  const isAdmin = useMemo(() => {
+    // حاول القراءة من السياق أولاً، ثم من localStorage كخطة بديلة
+    const u = auth?.user ?? (() => { try { return JSON.parse(localStorage.getItem('user') || 'null'); } catch { return null; } })();
+    return !!(u && (u.role === 'admin' || u.is_admin === true));
+  }, [auth?.user]);
+
+  const [filter, setFilter] = useState('all'); // all | jobs | (high/medium/low إن رغبت)
   const [searchTerm, setSearchTerm] = useState('');
   const [jobs, setJobs] = useState([]);
   const [loadingJobs, setLoadingJobs] = useState(true);
   const [error, setError] = useState('');
 
-  // اجلب الوظائف فقط (بدون بيانات وهمية)
+  const mapJobs = useCallback((list) => {
+    return list.map((j) => {
+      const created = j.created_at ? new Date(j.created_at) : new Date();
+      const date = created.toISOString().slice(0, 10);
+      const time = created.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return {
+        id: `job-${j.id}`,
+        rawId: j.id,
+        title: j.title ? `وظيفة: ${j.title}` : 'وظيفة',
+        content: [
+          j.company ? `الشركة: ${j.company}` : null,
+          j.location ? `الموقع: ${j.location}` : null,
+          labelEmployment(j.employment_type) ? `الدوام: ${labelEmployment(j.employment_type)}` : null,
+          labelWorkplace(j.workplace_type) ? `نمط العمل: ${labelWorkplace(j.workplace_type)}` : null,
+          j.benefits ? `المزايا: ${Array.isArray(j.benefits) ? j.benefits.join('، ') : j.benefits}` : null,
+        ].filter(Boolean).join(' • '),
+        date,
+        time,
+        author: j.company || 'وظائف الاتحاد',
+        priority: 'low',
+        category: 'وظائف',
+        type: 'job',
+        is_active: j.is_active !== false,
+        application_url: j.application_url || '',
+        max_applicants: j.max_applicants ?? 0,
+      };
+    });
+  }, []);
+
+  // دالة إعادة التحميل بحيث نستعملها بعد الحذف/التفعيل
+  const loadJobs = useCallback(async () => {
+    setLoadingJobs(true);
+    try {
+      setError('');
+      const list = await jobsAPI.list?.();
+      setJobs(Array.isArray(list) ? mapJobs(list) : []);
+    } catch (e) {
+      setError('تعذر جلب الوظائف. حاول لاحقاً.');
+    } finally {
+      setLoadingJobs(false);
+    }
+  }, [mapJobs]);
+
   useEffect(() => {
     let mounted = true;
     (async () => {
-      try {
-        setError('');
-        const list = await jobsAPI.list?.();
-        if (mounted && Array.isArray(list)) {
-          const mapped = list.map((j) => {
-            const created = j.created_at ? new Date(j.created_at) : new Date();
-            const date = created.toISOString().slice(0, 10);
-            const time = created.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            return {
-              id: `job-${j.id}`,
-              rawId: j.id,
-              title: j.title ? `وظيفة: ${j.title}` : 'وظيفة',
-              content: [
-                j.company ? `الشركة: ${j.company}` : null,
-                j.location ? `الموقع: ${j.location}` : null,
-                labelEmployment(j.employment_type) ? `الدوام: ${labelEmployment(j.employment_type)}` : null,
-                labelWorkplace(j.workplace_type) ? `نمط العمل: ${labelWorkplace(j.workplace_type)}` : null,
-                j.benefits ? `المزايا: ${j.benefits}` : null,
-              ].filter(Boolean).join(' • '),
-              date,
-              time,
-              author: j.company || 'وظائف الاتحاد',
-              priority: 'low',
-              category: 'وظائف',
-              type: 'job',
-              is_active: j.is_active !== false,
-              application_url: j.application_url || '',
-              max_applicants: j.max_applicants ?? 0,
-            };
-          });
-          setJobs(mapped);
-        }
-      } catch (e) {
-        if (mounted) setError('تعذر جلب الوظائف. حاول لاحقاً.');
-      } finally {
-        if (mounted) setLoadingJobs(false);
-      }
+      await loadJobs();
+      if (!mounted) return;
     })();
     return () => { mounted = false; };
-  }, []);
+  }, [loadJobs]);
 
-  // فقط الوظائف النشطة
+  // نعرض فقط الوظائف النشطة للجمهور
   const merged = useMemo(() => jobs.filter(j => j.is_active !== false), [jobs]);
-
-  const getPriorityColor = (priority) => {
-    switch (priority) {
-      case 'high': return 'bg-red-100 text-red-800 border-red-200';
-      case 'medium': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
-      case 'low': return 'bg-green-100 text-green-800 border-green-200';
-      default: return 'bg-gray-100 text-gray-800 border-gray-200';
-    }
-  };
-  const getPriorityLabel = (priority) => {
-    switch (priority) {
-      case 'high': return 'عاجل';
-      case 'medium': return 'متوسط';
-      case 'low': return 'عادي';
-      default: return 'عادي';
-    }
-  };
 
   const filteredAnnouncements = merged.filter((item) => {
     const passesTab =
@@ -135,12 +139,10 @@ const Announcements = ({ onSidebarHide }) => {
                 </svg>
               </div>
 
-              {/* Filters */}
+              {/* Tabs */}
               <div className="flex gap-2">
                 <TabBtn v="all" cur={filter} set={setFilter}>الكل</TabBtn>
                 <TabBtn v="jobs" cur={filter} set={setFilter}>وظائف</TabBtn>
-                {/* لو ودك بالأولوية خليها */}
-                {/* <TabBtn v="high" ...>عاجل</TabBtn> */}
               </div>
             </div>
           </div>
@@ -187,46 +189,42 @@ const Announcements = ({ onSidebarHide }) => {
 
                 {/* Footer */}
                 <div className="px-6 py-4 bg-gray-50 border-t border-gray-100">
-                  <div className="flex items-center justify-between text-xs text-gray-500">
-                    <div className="flex items-center">
-                      <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                      </svg>
-                      {item.author}
+                  <div className="flex items-center justify-between">
+                    <div className="text-[11px] text-gray-500">
+                      {item.max_applicants > 0 && (
+                        <span>الحد الأقصى للمتقدمين: {item.max_applicants}</span>
+                      )}
                     </div>
-                    <div className="flex items-center">
-                      <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                      {item.time} - {item.date}
+
+                    <div className="flex items-center gap-2">
+                      {/* زر الجمهور */}
+                      {item.application_url ? (
+                        <a
+                          href={item.application_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-xs px-3 py-1 rounded-lg bg-[#295a45] hover:bg-[#214937] text-white"
+                        >
+                          التقديم
+                        </a>
+                      ) : (
+                        <Link
+                          to={`/jobs/${item.rawId}`}
+                          className="text-xs px-3 py-1 rounded-lg bg-[#295a45] hover:bg-[#214937] text-white"
+                        >
+                          التفاصيل
+                        </Link>
+                      )}
+
+                      {/* أزرار الإدارة (تظهر للأدمن فقط) */}
+                      {isAdmin && (
+                        <JobActions
+                          job={{ id: item.rawId, is_active: item.is_active }}
+                          onChanged={loadJobs}
+                          size="sm"
+                        />
+                      )}
                     </div>
-                  </div>
-
-                  {/* CTA */}
-                  <div className="mt-3 flex items-center justify-between">
-                    {item.max_applicants > 0 && (
-                      <span className="text-[11px] text-gray-500">
-                        الحد الأقصى للمتقدمين: {item.max_applicants}
-                      </span>
-                    )}
-
-                    {item.application_url ? (
-                      <a
-                        href={item.application_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs px-3 py-1 rounded-lg bg-[#295a45] hover:bg-[#214937] text-white"
-                      >
-                        التقديم
-                      </a>
-                    ) : (
-                      <Link
-                        to={`/jobs/${item.rawId}`} // اربطه بتفاصيل داخلية لو عندك صفحة
-                        className="text-xs px-3 py-1 rounded-lg bg-[#295a45] hover:bg-[#214937] text-white"
-                      >
-                        التفاصيل
-                      </Link>
-                    )}
                   </div>
                 </div>
               </div>
@@ -259,6 +257,23 @@ function TabBtn({ v, cur, set, children }) {
       {children}
     </button>
   );
+}
+
+function getPriorityColor(priority) {
+  switch (priority) {
+    case 'high': return 'bg-red-100 text-red-800 border-red-200';
+    case 'medium': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+    case 'low': return 'bg-green-100 text-green-800 border-green-200';
+    default: return 'bg-gray-100 text-gray-800 border-gray-200';
+  }
+}
+function getPriorityLabel(priority) {
+  switch (priority) {
+    case 'high': return 'عاجل';
+    case 'medium': return 'متوسط';
+    case 'low': return 'عادي';
+    default: return 'عادي';
+  }
 }
 
 function labelEmployment(v) {
