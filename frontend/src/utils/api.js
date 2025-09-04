@@ -2,18 +2,13 @@
 import axios from 'axios';
 import { logNetworkError, getDeviceInfo } from './debugUtils.js';
 
-/**
- * أثناء التطوير:
- * - لو بتستخدم Vite proxy: خلّي VITE_API_URL و VITE_API_URL_FOR_AUTH فاضية في .env
- * - لو تبغى ضرب مباشر: حط http://localhost:8000 أو :8222 حسب منفذ الباك
- */
-
+// ===== Base URLs =====
 const RAW_BASE = (import.meta.env.VITE_API_URL ?? '').trim();
 const RAW_AUTH = (import.meta.env.VITE_API_URL_FOR_AUTH ?? RAW_BASE).trim();
-
 const API_BASE_URL  = RAW_BASE.replace(/\/+$/, '');
 const AUTH_BASE_URL = RAW_AUTH.replace(/\/+$/, '');
 
+// ===== Axios instances =====
 const formApi = axios.create({
   baseURL: API_BASE_URL || '',
   timeout: 30000,
@@ -71,107 +66,115 @@ const withSlash = (p) => (p.endsWith('/') ? p : `${p}/`);
 const toStr  = (v) => (v == null ? '' : String(v));
 const toBool = (v) => !!v;
 
+// تحويل textarea multi-line إلى Array<string>
 const linesToList = (v) => {
   if (v == null) return [];
-  if (Array.isArray(v)) return v.map((s) => String(s).trim()).filter(Boolean);
+  if (Array.isArray(v)) return v.map(x => String(x).trim()).filter(Boolean);
   return String(v)
     .split('\n')
-    .map((s) => s.trim())
+    .map(s => s.trim())
     .filter(Boolean);
 };
-const listToLines = (arr) => (Array.isArray(arr) ? arr.join('\n') : toStr(arr));
 
-// موحِّد الاستجابة من السيرفر
-// utils/api.js (أو أينما يوجد normalizeJob)
-const normalizeJob = (j = {}) => {
-  const id =
-    j.id ??
-    j._id ??
-    (j._id && j._id.$oid) ??
-    null;
-
-  const toArray = (v) => Array.isArray(v) ? v.filter(Boolean) : [];
-
-  return {
-    id,
-    title: j.title || '',
-    company: j.company || '',
-    location: j.location || '',
-    employment_type: j.employment_type || j.type || 'full_time',
-    workplace_type: j.workplace_type || j.workplace || 'onsite',
-    description: j.description || '',
-    responsibilities: toArray(j.responsibilities),
-    requirements: toArray(j.requirements),
-    benefits: toArray(j.benefits),
-    application_url: j.application_url || '',
-    max_applicants: Number.isFinite(j.max_applicants) ? j.max_applicants : 0,
-    is_active: j.is_active ?? true,
-    created_at: j.created_at ?? j.createdAt ?? null,
-    owner_id: j.owner_id ?? '',
-    // مفيد للتوافق:
-    applicants_count: j.applicants_count ?? j.applications_count ?? j.applied_count ?? 0,
-  };
+// عكسها: Array<string> إلى نص لعرضه في textarea
+const listToLines = (arr) => {
+  if (!Array.isArray(arr)) return toStr(arr);
+  return arr.map(x => String(x).trim()).filter(Boolean).join('\n');
 };
 
+// لو عندك select قديم يرجّع snake_case، خلّينا نطبّع
+const normalizeEmployment = (v) => ({
+  'full_time': 'full_time',
+  'part_time': 'part_time',
+  'contract': 'contract',
+  'internship': 'internship',
+  'temporary': 'temporary',
+  'freelance': 'freelance',
+  'other': 'other',
+  'full-time': 'full_time',
+  'part-time': 'part_time',
+}[v] || 'full_time');
 
-// حوّل نموذج الواجهة (strings) إلى ما يتوقعه الباك (lists + أسماء الحقول الصحيحة)
+const normalizeWorkplace = (v) => ({
+  'onsite': 'onsite',
+  'remote': 'remote',
+  'hybrid': 'hybrid',
+}[v] || 'onsite');
+
+// ===== Payload mappers (مهم) =====
 const toJobCreatePayload = (form) => {
-  const unlimited = form?.unlimited_applicants === true;
-  const parsedMax = form?.max_applicants === '' || form?.max_applicants == null
-    ? 0
-    : Math.max(0, Number(form.max_applicants) || 0);
-
   return {
     title: toStr(form?.title).trim(),
     company: toStr(form?.company).trim() || null,
     location: toStr(form?.location).trim() || null,
 
-    employment_type: form?.employment_type || 'full_time',
-    workplace_type: form?.workplace_type || 'onsite',
+    // هذه الحقول يتوقعها الباك كـ Literal
+    employment_type: normalizeEmployment(form?.employment_type),
+    workplace_type: normalizeWorkplace(form?.workplace_type),
 
     description: toStr(form?.description),
 
+    // أهم نقطة: لازم تكون Array<string>
     responsibilities: linesToList(form?.responsibilities),
-    requirements: linesToList(form?.requirements),
-    benefits: linesToList(form?.benefits),
+    requirements:     linesToList(form?.requirements),
+    benefits:         linesToList(form?.benefits),
 
     application_url: toStr(form?.application_url).trim() || null,
-    // “غير محدود” نمثّله بـ 0 (أسهل مع نوع int في الباك)
-    max_applicants: unlimited ? 0 : parsedMax,
+    max_applicants: Number.isFinite(+form?.max_applicants) ? +form.max_applicants : 0,
 
     is_active: toBool(form?.is_active),
   };
 };
 
 const toJobUpdatePayload = (form) => {
-  const payload = {};
-  if ('title' in form) payload.title = toStr(form.title).trim();
-  if ('company' in form) payload.company = toStr(form.company).trim() || null;
-  if ('location' in form) payload.location = toStr(form.location).trim() || null;
+  // PATCH: ابعث فقط القيم المعبّأة
+  const out = {};
+  if (form?.title != null) out.title = toStr(form.title).trim();
+  if (form?.company != null) out.company = toStr(form.company).trim() || null;
+  if (form?.location != null) out.location = toStr(form.location).trim() || null;
 
-  if ('employment_type' in form) payload.employment_type = form.employment_type;
-  if ('workplace_type' in form) payload.workplace_type = form.workplace_type;
+  if (form?.employment_type != null) out.employment_type = normalizeEmployment(form.employment_type);
+  if (form?.workplace_type != null)  out.workplace_type  = normalizeWorkplace(form.workplace_type);
 
-  if ('description' in form) payload.description = toStr(form.description);
+  if (form?.description != null) out.description = toStr(form.description);
 
-  if ('responsibilities' in form) payload.responsibilities = linesToList(form.responsibilities);
-  if ('requirements' in form) payload.requirements = linesToList(form.requirements);
-  if ('benefits' in form) payload.benefits = linesToList(form.benefits);
+  if (form?.responsibilities != null) out.responsibilities = linesToList(form.responsibilities);
+  if (form?.requirements != null)     out.requirements     = linesToList(form.requirements);
+  if (form?.benefits != null)         out.benefits         = linesToList(form.benefits);
 
-  if ('application_url' in form) payload.application_url = toStr(form.application_url).trim() || null;
+  if (form?.application_url != null) out.application_url = toStr(form.application_url).trim() || null;
+  if (form?.max_applicants != null)  out.max_applicants  = Number.isFinite(+form.max_applicants) ? +form.max_applicants : 0;
 
-  if ('unlimited_applicants' in form || 'max_applicants' in form) {
-    const unlimited = form?.unlimited_applicants === true;
-    const parsedMax = form?.max_applicants === '' || form?.max_applicants == null
-      ? 0
-      : Math.max(0, Number(form.max_applicants) || 0);
-    // نخزن 0 لغير محدود لتوافق نوع int في الموديل
-    payload.max_applicants = unlimited ? 0 : parsedMax;
-  }
+  if (form?.is_active != null) out.is_active = toBool(form.is_active);
 
-  if ('is_active' in form) payload.is_active = toBool(form.is_active);
+  return out;
+};
 
-  return payload;
+// توحيد ناتج السيرفر كي نعرضه بسهولة في الواجهة (textarea)
+const normalizeJob = (j) => {
+  if (!j) return null;
+  return {
+    id: j.id ?? j._id ?? null,
+    title: j.title || '',
+    company: j.company || '',
+    location: j.location || '',
+
+    employment_type: j.employment_type || 'full_time',
+    workplace_type:  j.workplace_type  || 'onsite',
+
+    description: j.description || '',
+
+    responsibilities: listToLines(j.responsibilities || []),
+    requirements:     listToLines(j.requirements     || []),
+    benefits:         listToLines(j.benefits         || []),
+
+    application_url: j.application_url || '',
+    max_applicants: typeof j.max_applicants === 'number' ? j.max_applicants : 0,
+
+    is_active: j.is_active ?? true,
+    created_at: j.created_at ?? j.createdAt ?? null,
+    owner_id: j.owner_id ?? '',
+  };
 };
 
 // ===== Auth =====
@@ -220,7 +223,6 @@ export const jobsAPI = {
   },
 
   create: async (formLike) => {
-    // يتطلب توكن أدمن (get_admin_user)
     const payload = toJobCreatePayload(formLike);
     const res = await api.post(withSlash('/api/jobs'), payload);
     return normalizeJob(res.data);
